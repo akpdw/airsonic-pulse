@@ -1,5 +1,6 @@
 package org.airsonic.player.ajax;
 
+import org.airsonic.player.build.UnmodifiableResult;
 import org.airsonic.player.domain.PodcastChannel;
 import org.airsonic.player.domain.PodcastEpisode;
 import org.airsonic.player.domain.PodcastStatus;
@@ -7,7 +8,7 @@ import org.airsonic.player.service.PodcastManagementService;
 import org.airsonic.player.service.PodcastPersistenceService;
 import org.airsonic.player.service.podcast.PodcastIndexService;
 import org.airsonic.player.service.podcast.PodcastIndexService.PodcastIndexResponse.PodcastIndexResult;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.simp.annotation.SendToUser;
@@ -31,6 +32,7 @@ public class PodcastWSController {
     PodcastIndexService podcastIndexService;
 
     @SubscribeMapping("all")
+    @UnmodifiableResult
     public List<PodcastChannelInfo> getAllPodcastChannels() {
         return podcastPersistenceService.getAllChannels().stream().map(this::wrap).toList();
     }

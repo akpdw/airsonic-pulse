@@ -20,6 +20,7 @@
  */
 package org.airsonic.player.service;
 
+import org.airsonic.player.build.UnmodifiableResult;
 import org.airsonic.player.command.PodcastSettingsCommand.PodcastRule;
 import org.airsonic.player.domain.MediaFile;
 import org.airsonic.player.domain.MusicFolder;
@@ -37,8 +38,8 @@ import org.airsonic.player.util.FileUtil;
 import org.airsonic.player.util.NetworkUtil;
 import org.airsonic.player.util.PodcastUtil;
 import org.airsonic.player.util.StringUtil;
-import org.apache.commons.lang.StringUtils;
 import org.apache.commons.lang3.RandomStringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.jdom2.Element;
 import org.jdom2.Namespace;
 import org.slf4j.Logger;
@@ -226,6 +227,7 @@ public class PodcastPersistenceService {
      *
      * @return channels without rule
      */
+    @UnmodifiableResult
     public List<PodcastChannel> getChannelsWithoutRule() {
         Set<Integer> ruleIds = podcastRuleRepository.findAll().parallelStream().map(r -> r.getId()).collect(toSet());
         return podcastChannelRepository.findAll().parallelStream().filter(c -> !ruleIds.contains(c.getId())).toList();
@@ -565,7 +567,10 @@ public class PodcastPersistenceService {
     public boolean deleteChannel(int channelId) {
         // Delete all associated episodes (in case they have files that need to be deleted).
         return podcastChannelRepository.findById(channelId).map(channel -> {
-            podcastEpisodeRepository.findByChannel(channel).parallelStream()
+            // Sequential on purpose: transactions are thread-bound, so parallel workers would run
+            // mediaFileService.delete in their own transactions and commit mid-delete, colliding
+            // with this transaction's flush (#330 — MariaDB snapshot isolation rejects the write).
+            podcastEpisodeRepository.findByChannel(channel).stream()
                 .filter(filterAllowed)
                 .forEach(episode -> {
                     MediaFile mediaFile = episode.getMediaFile();

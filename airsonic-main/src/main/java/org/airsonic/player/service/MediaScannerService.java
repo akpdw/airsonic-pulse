@@ -216,9 +216,15 @@ public class MediaScannerService {
         ForkJoinPool pool = new ForkJoinPool(scannerParallelism, mediaScannerThreadFactory, null, true);
 
         boolean isFullScan = settingsService.getFullScan();
-        long timeoutSeconds = isFullScan ? scanConfig.getFullTimeout() : scanConfig.getTimeout();
+        // A timeout set in General Settings (or written to airsonic.properties) wins; the
+        // startup-bound AirsonicScanConfig value is the fallback. Read here, per scan, so a
+        // settings change applies to the next scan without a restart.
+        Integer timeoutSetting = isFullScan ? settingsService.getFullScanTimeoutSeconds() : settingsService.getScanTimeoutSeconds();
+        long timeoutSeconds = timeoutSetting != null ? timeoutSetting
+                : (isFullScan ? scanConfig.getFullTimeout() : scanConfig.getTimeout());
         MediaLibraryStatistics statistics = new MediaLibraryStatistics();
-        LOG.info("Starting media library scan with timeout {} seconds.", timeoutSeconds);
+        LOG.info("Starting {} scan, timeout {} s ({}).", isFullScan ? "full" : "quick", timeoutSeconds,
+                timeoutSetting != null ? "from General Settings" : "from AirsonicScanConfig default");
         CompletableFuture.runAsync(() -> {
             doScanLibrary(pool, statistics);
         }, pool)
@@ -321,10 +327,28 @@ public class MediaScannerService {
                         LOG.info("Updating genres");
                         long count = mediaFileService.updateGenres(genres.getGenres()).size();
                         boolean genresSuccessful = count == genres.getGenres().size();
+                        // The accumulator above was rebuilt from scratch over every music folder,
+                        // and this block is only reached when that walk completed uncancelled
+                        // (the isMediaScanning() check after the join), so any genre row not in
+                        // the seen set is stale (#319). A partial walk (per-folder scan, #357)
+                        // must skip or scope this delete, or it would remove valid genres.
+                        int staleCount = mediaFileService.deleteStaleGenres(genres.getGenres());
+                        if (staleCount > 0) {
+                            LOG.info("Removed {} stale genre(s) no longer present on any scanned file.", staleCount);
+                        }
                         LOG.info("Genre persistence successfully complete: {}", genresSuccessful);
                     }, pool);
 
             CompletableFuture.allOf(albumPersistence, artistPersistence, mediaFilePersistence, genrePersistence).join();
+
+            // The index is appended to, never rebuilt, and search does not check the present
+            // flag, so the rows just marked non-present would stay searchable (#405). The
+            // marking is only valid after a complete, uncancelled walk (same condition as the
+            // stale-genre delete above); a timed-out scan clears the flag and skips this.
+            if (isMediaScanning()) {
+                indexManager.expunge();
+                LOG.info("Removed non-present albums, artists and files from the search index.");
+            }
             LOG.info("Completed media library scan.");
 
         } catch (Throwable x) {
@@ -367,13 +391,18 @@ public class MediaScannerService {
             mediaFileService.updateMediaFile(file);
         }
 
-        indexManager.index(file, musicFolder);
+        if (!file.isDirectory()) {
+            indexManager.index(file, musicFolder);
+        }
 
         try {
             pool.submit(() -> {
                 if (file.isDirectory()) {
-                    try (Stream<MediaFile> children = mediaFileService.getChildrenOf(file, true, true, false, false)
-                            .parallelStream()) {
+                    List<MediaFile> childFiles = mediaFileService.getChildrenOf(file, true, true, false, false);
+                    // Reading the children refreshes this directory's artist/album snapshot, so
+                    // index it afterwards or the document is one scan behind the row (#405).
+                    indexManager.index(file, musicFolder);
+                    try (Stream<MediaFile> children = childFiles.parallelStream()) {
                         children.forEach(child -> scanFile(pool, parent, file, child, musicFolder, statistics, albumCount,
                                 artists, albums, albumsInDb, genres));
                     }

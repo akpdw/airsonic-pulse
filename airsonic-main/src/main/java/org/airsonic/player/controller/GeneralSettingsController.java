@@ -23,15 +23,20 @@ import org.airsonic.player.command.GeneralSettingsCommand;
 import org.airsonic.player.domain.Theme;
 import org.airsonic.player.service.PlaylistFileService;
 import org.airsonic.player.service.SettingsService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
+import org.springframework.validation.BindingResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.servlet.mvc.support.RedirectAttributes;
 
+import java.nio.file.InvalidPathException;
+import java.nio.file.Paths;
 import java.util.Locale;
 
 /**
@@ -42,6 +47,8 @@ import java.util.Locale;
 @Controller
 @RequestMapping({"/generalSettings", "/generalSettings.view"})
 public class GeneralSettingsController {
+
+    private static final Logger LOG = LoggerFactory.getLogger(GeneralSettingsController.class);
 
     @Autowired
     private SettingsService settingsService;
@@ -56,6 +63,11 @@ public class GeneralSettingsController {
 
     @ModelAttribute
     protected void formBackingObject(Model model) {
+        // A command flashed back by doSubmitAction after a validation error carries the
+        // rejected input and its binding result; don't overwrite it with the saved settings.
+        if (model.containsAttribute("command")) {
+            return;
+        }
         GeneralSettingsCommand command = new GeneralSettingsCommand();
         command.setCoverArtFileTypes(settingsService.getCoverArtFileTypes());
         command.setCoverArtSource(settingsService.getCoverArtSource());
@@ -68,8 +80,12 @@ public class GeneralSettingsController {
         command.setPlaylistFolder(settingsService.getPlaylistFolder());
         command.setMusicFileTypes(settingsService.getMusicFileTypes());
         command.setVideoFileTypes(settingsService.getVideoFileTypes());
+        command.setReplayGainFallback(settingsService.getReplayGainFallback());
+        command.setScanTimeoutSeconds(settingsService.getScanTimeoutSeconds());
+        command.setFullScanTimeoutSeconds(settingsService.getFullScanTimeoutSeconds());
         command.setSortAlbumsByYear(settingsService.isSortAlbumsByYear());
         command.setGettingStartedEnabled(settingsService.isGettingStartedEnabled());
+        command.setShowVersionOnLogin(settingsService.isShowVersionOnLogin());
         command.setWelcomeTitle(settingsService.getWelcomeTitle());
         command.setWelcomeSubtitle(settingsService.getWelcomeSubtitle());
         command.setWelcomeMessage(settingsService.getWelcomeMessage());
@@ -102,7 +118,28 @@ public class GeneralSettingsController {
     }
 
     @PostMapping
-    protected String doSubmitAction(@ModelAttribute("command") GeneralSettingsCommand command, RedirectAttributes redirectAttributes) {
+    protected String doSubmitAction(@ModelAttribute("command") GeneralSettingsCommand command, BindingResult bindingResult, RedirectAttributes redirectAttributes) {
+
+        Double replayGainFallback = command.getReplayGainFallback();
+        if (replayGainFallback != null
+                && (!Double.isFinite(replayGainFallback) || replayGainFallback < -12.0 || replayGainFallback > 12.0)) {
+            bindingResult.rejectValue("replayGainFallback", "generalsettings.replaygainfallback.invalid");
+        }
+        Integer scanTimeout = command.getScanTimeoutSeconds();
+        if (scanTimeout != null && (scanTimeout < 60 || scanTimeout > 86400)) {
+            bindingResult.rejectValue("scanTimeoutSeconds", "generalsettings.scantimeout.invalid");
+        }
+        Integer fullScanTimeout = command.getFullScanTimeoutSeconds();
+        if (fullScanTimeout != null && (fullScanTimeout < 60 || fullScanTimeout > 86400)) {
+            bindingResult.rejectValue("fullScanTimeoutSeconds", "generalsettings.fullscantimeout.invalid");
+        } else if (scanTimeout != null && fullScanTimeout != null && fullScanTimeout < scanTimeout) {
+            bindingResult.rejectValue("fullScanTimeoutSeconds", "generalsettings.fullscantimeout.lessthanscan");
+        }
+        if (bindingResult.hasErrors()) {
+            redirectAttributes.addFlashAttribute("command", command);
+            redirectAttributes.addFlashAttribute("org.springframework.validation.BindingResult.command", bindingResult);
+            return "redirect:generalSettings.view";
+        }
 
         int themeIndex = Integer.parseInt(command.getThemeIndex());
         Theme theme = settingsService.getAvailableThemes()[themeIndex];
@@ -122,17 +159,31 @@ public class GeneralSettingsController {
         settingsService.setIgnoredArticles(command.getIgnoredArticles());
         settingsService.setGenreSeparators(command.getGenreSeparators());
         settingsService.setShortcuts(command.getShortcuts());
+        String previousPlaylistFolder = settingsService.getPlaylistFolder();
         settingsService.setPlaylistFolder(command.getPlaylistFolder());
-        playlistFileService.addPlaylistFolderWatcher();
-        playlistFileService.importPlaylists();
+        String newPlaylistFolder = normalizedPlaylistFolder(command.getPlaylistFolder());
+        String previousNormalizedFolder = normalizedPlaylistFolder(previousPlaylistFolder);
+        if (!newPlaylistFolder.isEmpty() && !newPlaylistFolder.equals(previousNormalizedFolder)) {
+            playlistFileService.removePlaylistFolderWatcher();
+            playlistFileService.addPlaylistFolderWatcher();
+            playlistFileService.importPlaylists();
+        } else if (newPlaylistFolder.isEmpty() && !previousNormalizedFolder.isEmpty()) {
+            playlistFileService.removePlaylistFolderWatcher();
+        } else {
+            LOG.debug("Playlist folder setting unchanged or blank; skipping watcher registration and playlist import.");
+        }
         settingsService.setMusicFileTypes(command.getMusicFileTypes());
         settingsService.setVideoFileTypes(command.getVideoFileTypes());
         settingsService.setCoverArtFileTypes(command.getCoverArtFileTypes());
         settingsService.setCoverArtSource(command.getCoverArtSource());
         settingsService.setCoverArtConcurrency(command.getCoverArtConcurrency());
         settingsService.setCoverArtQuality(command.getCoverArtQuality());
+        settingsService.setReplayGainFallback(command.getReplayGainFallback());
+        settingsService.setScanTimeoutSeconds(command.getScanTimeoutSeconds());
+        settingsService.setFullScanTimeoutSeconds(command.getFullScanTimeoutSeconds());
         settingsService.setSortAlbumsByYear(command.isSortAlbumsByYear());
         settingsService.setGettingStartedEnabled(command.isGettingStartedEnabled());
+        settingsService.setShowVersionOnLogin(command.isShowVersionOnLogin());
         settingsService.setWelcomeTitle(command.getWelcomeTitle());
         settingsService.setWelcomeSubtitle(command.getWelcomeSubtitle());
         settingsService.setWelcomeMessage(command.getWelcomeMessage());
@@ -143,6 +194,17 @@ public class GeneralSettingsController {
         settingsService.save();
 
         return "redirect:generalSettings.view";
+    }
+
+    private static String normalizedPlaylistFolder(String folder) {
+        if (folder == null || folder.isBlank()) {
+            return "";
+        }
+        try {
+            return Paths.get(folder.trim()).normalize().toString();
+        } catch (InvalidPathException e) {
+            return folder.trim();
+        }
     }
 
 }

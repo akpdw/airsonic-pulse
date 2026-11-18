@@ -25,7 +25,7 @@ import org.airsonic.player.domain.User;
 import org.airsonic.player.service.LyricsService;
 import org.airsonic.player.service.MediaFolderService;
 import org.airsonic.player.service.SecurityService;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.Resource;
 import org.springframework.http.ResponseEntity;
@@ -50,7 +50,8 @@ import java.util.List;
 import java.util.Optional;
 
 @Controller
-@RequestMapping(value = {"/rest", "/ext"}, method = {RequestMethod.GET, RequestMethod.POST})
+// Must stay off /ext: the wrapped binary controllers self-register those routes, and a duplicate registration broke JWT streaming (#325)
+@RequestMapping(value = "/rest", method = {RequestMethod.GET, RequestMethod.POST})
 public class SubsonicMediaController extends AbstractSubsonicController {
 
     @Autowired
@@ -79,6 +80,8 @@ public class SubsonicMediaController extends AbstractSubsonicController {
             ServletWebRequest swr) throws Exception {
         HttpServletRequest request = wrapRequest(swr.getRequest());
         final Integer playerId = Optional.ofNullable(request.getParameter("player")).map(Integer::valueOf).orElse(null);
+        // lang3 isNumeric("") is false, so an empty id is filtered out and treated as absent;
+        // lang 2.x returned true and let Integer.valueOf("") throw NumberFormatException.
         Optional<Integer> idInt = Optional.ofNullable(id).map(this::mapId).filter(StringUtils::isNumeric).map(Integer::valueOf);
 
         User user = securityService.getUserByName(p.getName());

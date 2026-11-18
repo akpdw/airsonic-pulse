@@ -24,6 +24,7 @@ import com.google.common.math.DoubleMath;
 import com.ibm.icu.text.CharsetDetector;
 import com.ibm.icu.text.CharsetMatch;
 import org.airsonic.player.ajax.MediaFileEntry;
+import org.airsonic.player.build.UnmodifiableResult;
 import org.airsonic.player.controller.HomeController;
 import org.airsonic.player.domain.*;
 import org.airsonic.player.domain.CoverArt.EntityType;
@@ -47,7 +48,7 @@ import org.airsonic.player.service.metadata.MetaDataParser;
 import org.airsonic.player.service.metadata.MetaDataParserFactory;
 import org.airsonic.player.util.FileUtil;
 import org.apache.commons.io.FilenameUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import org.digitalmediaserver.cuelib.CueParser;
 import org.digitalmediaserver.cuelib.CueSheet;
@@ -85,6 +86,8 @@ import java.time.format.FormatStyle;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
@@ -309,6 +312,10 @@ public class MediaFileService {
                         createIndexedTracks(mediaFile);
                         // update media file
                         mediaFile.setChanged(mediaChanged.compareTo(cueChanged) >= 0 ? mediaChanged : cueChanged);
+                        // stamp the base row so a VERSION bump doesn't re-materialise the
+                        // indexed tracks on every scan (#341) — this branch bypasses
+                        // updateMediaFileByFile, which stamps the plain-file path
+                        mediaFile.markCurrentVersion();
                         updateMediaFile(mediaFile);
                     } catch (Exception e) {
                         LOG.error("create indexed tracks error: {}", mediaFile.getFullPath(), e);
@@ -344,6 +351,7 @@ public class MediaFileService {
      * @param sort               Whether to sort files in the same directory.
      * @return All children media files.
      */
+    @UnmodifiableResult
     public List<MediaFile> getChildrenOf(MediaFile parent, boolean includeFiles, boolean includeDirectories, boolean sort) {
         return getChildrenOf(parent, includeFiles, includeDirectories, sort, settingsService.isFastCacheEnabled());
     }
@@ -357,6 +365,7 @@ public class MediaFileService {
      * @param minimizeDiskAccess Whether to refrain from checking for new or changed files
      * @return All children media files.
      */
+    @UnmodifiableResult
     public List<MediaFile> getChildrenOf(MediaFile parent, boolean includeFiles, boolean includeDirectories, boolean sort, boolean minimizeDiskAccess) {
 
         if (!parent.isDirectory()) {
@@ -472,6 +481,7 @@ public class MediaFileService {
      * @return The most recently starred songs for this user.
      */
     @Transactional
+    @UnmodifiableResult
     public List<MediaFile> getStarredSongs(int offset, int count, String username, List<MusicFolder> musicFolders) {
         if (CollectionUtils.isEmpty(musicFolders)) {
             return Collections.emptyList();
@@ -574,6 +584,32 @@ public class MediaFileService {
     @Transactional
     public List<Genre> updateGenres(List <Genre> genres) {
         return genreRepository.saveAll(genres);
+    }
+
+    /**
+     * Deletes every genre row whose name is not in the given scan-seen set (#319). The genre
+     * table is a count cache rebuilt from scratch by each scan: saveAll only upserts the names
+     * the scan encountered, so a genre removed from the last file that carried it would
+     * otherwise survive forever with frozen counts.
+     *
+     * <p>Only call this after a scan that walked EVERY music folder and completed normally
+     * (today that is every scan that reaches the persistence phase). A partial walk — e.g. the
+     * per-folder scan proposed in #357 — must skip or scope this delete, or it would remove
+     * genres that are still present on files in the unscanned folders.
+     *
+     * @param seenGenres the genres accumulated by the completed scan
+     * @return the number of stale rows deleted
+     */
+    @Transactional
+    public int deleteStaleGenres(Collection<Genre> seenGenres) {
+        Set<String> seenNames = seenGenres.stream().map(Genre::getName).collect(Collectors.toSet());
+        List<Genre> staleGenres = genreRepository.findAll().stream()
+                .filter(genre -> !seenNames.contains(genre.getName()))
+                .toList();
+        if (!staleGenres.isEmpty()) {
+            genreRepository.deleteAllInBatch(staleGenres);
+        }
+        return staleGenres.size();
     }
 
     /**
@@ -707,21 +743,29 @@ public class MediaFileService {
 
     /**
      * Returns random songs for the given parent.
+     * <p>
+     * The pick is a single subtree-scoped query ordered by the database's random function and
+     * bounded to {@code count} rows (#351) — the subtree is never materialised in memory and no
+     * per-descendant last-modified check runs, so the result reflects the state of the last scan.
      *
      * @param parent The parent.
      * @param count  Max number of songs to return.
      * @return Random songs.
      */
-    @Transactional(isolation = Isolation.READ_COMMITTED)
+    @Transactional(readOnly = true)
     public List<MediaFile> getRandomSongsForParent(MediaFile parent, int count) {
-        List<MediaFile> children = getDescendantsOf(parent, false);
-        removeVideoFiles(children);
-
-        if (children.isEmpty()) {
-            return children;
+        if (count == 0) {
+            return new ArrayList<>();
         }
-        Collections.shuffle(children);
-        return children.subList(0, Math.min(count, children.size()));
+        if (parent.isFile()) {
+            // a file parent is its own single candidate, videos excluded as before
+            return parent.isVideo() ? new ArrayList<>() : new ArrayList<>(List.of(parent));
+        }
+        // copy: the paged result is unmodifiable and callers (PlayQueueService.doPlay) mutate it
+        return new ArrayList<>(mediaFileRepository.findAll(
+                MediaFileSpecifications.randomSongsUnderParent(parent.getFolder(), parent.getPath(),
+                        settingsService.getHideVirtualTracks(), settingsService.getDatabaseType()),
+                Pageable.ofSize(count)));
     }
 
     /**
@@ -772,6 +816,9 @@ public class MediaFileService {
 
         boolean isEnableCueIndexing = settingsService.getEnableCueIndexing();
 
+        // set when an already-stored child is re-read from disk because it changed
+        AtomicBoolean existingChildUpdated = new AtomicBoolean(false);
+
         // cue sheets
         Map<String, CueSheet> cueSheets = new ConcurrentHashMap<>();
         // media files that are not indexed
@@ -779,9 +826,18 @@ public class MediaFileService {
         // m4b files are treated as audio books
         Map<String, MediaFile> audioBooks = new ConcurrentHashMap<>();
 
+        // row of the child the album snapshot is taken from
+        AtomicReference<MediaFile> snapshotChild = new AtomicReference<>();
+
         // Collect all children.
         try (Stream<Path> children = Files.list(parent.getFullPath())) {
-            children.parallel()
+            List<Path> listedChildren = children.toList();
+            // same selection as the snapshot in updateMediaFileByFile: first regular media file as listed
+            Path snapshotChildPath = listedChildren.stream()
+                    .filter(this::includeMediaFileByPath)
+                    .filter(x -> Files.isRegularFile(x))
+                    .findFirst().orElse(null);
+            listedChildren.parallelStream()
                 .filter(x -> mediaFolderService.getMusicFolderForFile(x, true, true).map(f -> f.equals(folder)).orElse(false))
                 .forEach(x -> {
                     Path relativePath = folder.getPath().relativize(x);
@@ -793,7 +849,13 @@ public class MediaFileService {
                                 updateMediaFile(mediaFile);
                             }
                         } else if (!mediaFile.hasIndex()) {
+                            if (needsUpdate(mediaFile, false)) {
+                                existingChildUpdated.set(true);
+                            }
                             mediaFile = checkLastModified(mediaFile, false); // has to be false, only time it's called
+                        }
+                        if (mediaFile != null && x.equals(snapshotChildPath)) {
+                            snapshotChild.set(mediaFile);
                         }
                         // Add children that are not already stored.
                         if (mediaFile != null) {
@@ -887,12 +949,54 @@ public class MediaFileService {
         // Delete children that no longer exist on disk.
         storedChildrenMap.values().forEach(f -> delete(f));
 
+        // An album directory's artist/album/year/genre are a snapshot guessed from its first
+        // child (updateMediaFileByFile). Retagging a file in place does not touch the
+        // directory's mtime, so without this refresh the snapshot — including a genre that no
+        // longer exists on any file — would survive every rescan (#319).
+        if (existingChildUpdated.get()) {
+            updateMediaFileByFile(parent);
+        }
+
+        // The refresh above only fires when a child is re-read in this pass. A child row can
+        // already be current while the snapshot is not (the row was refreshed by an id lookup, or
+        // by a scan from a release without the refresh), so compare against the child row on
+        // every pass (#405). The parent is written below either way.
+        refreshAlbumSnapshot(parent, snapshotChild.get());
+
         // Update timestamp in parent.
         parent.setChildrenLastUpdated(parent.getChanged());
         parent.setPresent(true);
         updateMediaFile(parent);
 
         return result;
+    }
+
+    /**
+     * Brings an album directory's snapshot fields (artist, album name, year, genre, packed
+     * genres) in line with the row of the child they are taken from. The child's album artist
+     * becomes the directory's artist, as in updateMediaFileByFile.
+     *
+     * @param parent        the directory row; only changed when it is an album
+     * @param snapshotChild the row of the first media file in the directory, or null
+     * @return whether a snapshot field was changed
+     */
+    static boolean refreshAlbumSnapshot(@Nonnull MediaFile parent, @Nullable MediaFile snapshotChild) {
+        if (snapshotChild == null || !parent.isAlbum()) {
+            return false;
+        }
+        if (Objects.equals(parent.getArtist(), snapshotChild.getAlbumArtist())
+                && Objects.equals(parent.getAlbumName(), snapshotChild.getAlbumName())
+                && Objects.equals(parent.getYear(), snapshotChild.getYear())
+                && Objects.equals(parent.getGenre(), snapshotChild.getGenre())
+                && Objects.equals(parent.getGenres(), snapshotChild.getGenres())) {
+            return false;
+        }
+        parent.setArtist(snapshotChild.getAlbumArtist());
+        parent.setAlbumName(snapshotChild.getAlbumName());
+        parent.setYear(snapshotChild.getYear());
+        parent.setGenre(snapshotChild.getGenre());
+        parent.setGenres(snapshotChild.getGenres());
+        return true;
     }
 
     /**
@@ -1105,6 +1209,11 @@ public class MediaFileService {
             }
         }
 
+        // Stamp the freshly reflected row with the current schema version. This mutates the
+        // loaded entity in place, so without the stamp an upgraded row keeps its old stored
+        // version and needsUpdate re-parses it on every scan (#341).
+        mediaFile.markCurrentVersion();
+
         return mediaFile;
 
     }
@@ -1179,7 +1288,9 @@ public class MediaFileService {
                     track.setFormat(base.getFormat());
                     track.setMusicBrainzRecordingId(base.getMusicBrainzRecordingId());
                     track.setMusicBrainzReleaseId(base.getMusicBrainzReleaseId());
-                    long estimatedSize = (long) (duration / base.getDuration() * Files.size(audioFile));
+                    Double baseDuration = base.getDuration();
+                    double wholeFileLength = baseDuration != null ? baseDuration : 0.0;
+                    long estimatedSize = (long) (duration / wholeFileLength * Files.size(audioFile));
                     if (estimatedSize > 0 && estimatedSize < Files.size(audioFile)) {
                         track.setFileSize(estimatedSize);
                     } else {
@@ -1224,7 +1335,8 @@ public class MediaFileService {
 
             Path audioFile = base.getFullPath();
             long wholeFileSize = Files.size(audioFile);
-            double wholeFileLength = base.getDuration();
+            Double baseDuration = base.getDuration();
+            double wholeFileLength = baseDuration != null ? baseDuration : 0.0;
 
             String basePath = base.getPath();
             String parentPath = base.getParentPath();
@@ -1570,7 +1682,10 @@ public class MediaFileService {
 
         Pair<Integer, Instant> lastPlayedInfo = lastPlayed.computeIfAbsent(player.getId(), k -> Pair.of(file.getId(), now));
         if (lastPlayedInfo.getLeft() == file.getId()) {
-            Double threshold = Math.max(1.0, file.getDuration() / 2);
+            // duration is nullable (#322); an unknown-length file gets the 1.0s minimum
+            // replay-debounce window instead of NPE-ing the whole play-count increment
+            Double duration = file.getDuration();
+            double threshold = Math.max(1.0, (duration == null ? 0 : duration) / 2);
             if (Duration.between(lastPlayedInfo.getRight(), now).getSeconds() < threshold) {
                 return;
             }

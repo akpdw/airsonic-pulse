@@ -37,12 +37,16 @@ public class GeneralSettingsCommand {
     private CoverArtSource coverArtSource;
     private Integer coverArtQuality;
     private Integer coverArtConcurrency;
+    private Double replayGainFallback;
+    private Integer scanTimeoutSeconds;
+    private Integer fullScanTimeoutSeconds;
     private String index;
     private String ignoredArticles;
     private String genreSeparators;
     private String shortcuts;
     private boolean sortAlbumsByYear;
     private boolean gettingStartedEnabled;
+    private boolean showVersionOnLogin;
     private String welcomeTitle;
     private String welcomeSubtitle;
     private String welcomeMessage;
@@ -107,6 +111,30 @@ public class GeneralSettingsCommand {
 
     public void setCoverArtConcurrency(Integer coverArtConcurrency) {
         this.coverArtConcurrency = coverArtConcurrency;
+    }
+
+    public Double getReplayGainFallback() {
+        return replayGainFallback;
+    }
+
+    public void setReplayGainFallback(Double replayGainFallback) {
+        this.replayGainFallback = replayGainFallback;
+    }
+
+    public Integer getScanTimeoutSeconds() {
+        return scanTimeoutSeconds;
+    }
+
+    public void setScanTimeoutSeconds(Integer scanTimeoutSeconds) {
+        this.scanTimeoutSeconds = scanTimeoutSeconds;
+    }
+
+    public Integer getFullScanTimeoutSeconds() {
+        return fullScanTimeoutSeconds;
+    }
+
+    public void setFullScanTimeoutSeconds(Integer fullScanTimeoutSeconds) {
+        this.fullScanTimeoutSeconds = fullScanTimeoutSeconds;
     }
 
     public String getIndex() {
@@ -230,6 +258,14 @@ public class GeneralSettingsCommand {
 
     public void setGettingStartedEnabled(boolean gettingStartedEnabled) {
         this.gettingStartedEnabled = gettingStartedEnabled;
+    }
+
+    public boolean isShowVersionOnLogin() {
+        return showVersionOnLogin;
+    }
+
+    public void setShowVersionOnLogin(boolean showVersionOnLogin) {
+        this.showVersionOnLogin = showVersionOnLogin;
     }
 
 }

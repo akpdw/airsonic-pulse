@@ -119,6 +119,7 @@ public class SettingsServiceTestCase {
         assertEquals("30m", settingsService.getSessionDuration());
         assertEquals(true, settingsService.getEnableCueIndexing());
         assertEquals(true, settingsService.getHideVirtualTracks());
+        assertTrue(settingsService.isShowVersionOnLogin());
     }
 
     @Test
@@ -147,6 +148,7 @@ public class SettingsServiceTestCase {
         settingsService.setLdapAutoShadowing(true);
         settingsService.setEnableCueIndexing(false);
         settingsService.setHideVirtualTracks(false);
+        settingsService.setShowVersionOnLogin(false);
 
         verifySettings(settingsService);
 
@@ -154,6 +156,48 @@ public class SettingsServiceTestCase {
         verifySettings(settingsService);
 
         verifySettings(newSettingsService());
+    }
+
+    @Test
+    public void testScanTimeoutsRoundTrip() {
+        assertNull(settingsService.getScanTimeoutSeconds());
+        assertNull(settingsService.getFullScanTimeoutSeconds());
+
+        settingsService.setScanTimeoutSeconds(600);
+        settingsService.setFullScanTimeoutSeconds(7200);
+        assertEquals(600, settingsService.getScanTimeoutSeconds());
+        assertEquals(7200, settingsService.getFullScanTimeoutSeconds());
+        settingsService.save();
+        SettingsService freshService = newSettingsService();
+        assertEquals(600, freshService.getScanTimeoutSeconds());
+        assertEquals(7200, freshService.getFullScanTimeoutSeconds());
+
+        settingsService.setScanTimeoutSeconds(null);
+        settingsService.setFullScanTimeoutSeconds(null);
+        assertNull(settingsService.getScanTimeoutSeconds());
+        assertNull(settingsService.getFullScanTimeoutSeconds());
+        settingsService.save();
+        freshService = newSettingsService();
+        assertNull(freshService.getScanTimeoutSeconds());
+        assertNull(freshService.getFullScanTimeoutSeconds());
+    }
+
+    @Test
+    public void testReplayGainFallbackRoundTrip() {
+        assertNull(settingsService.getReplayGainFallback());
+
+        settingsService.setReplayGainFallback(3.5);
+        assertEquals(3.5, settingsService.getReplayGainFallback());
+        settingsService.save();
+        assertEquals(3.5, newSettingsService().getReplayGainFallback());
+
+        settingsService.setReplayGainFallback(0.0);
+        assertEquals(0.0, settingsService.getReplayGainFallback());
+
+        settingsService.setReplayGainFallback(null);
+        assertNull(settingsService.getReplayGainFallback());
+        settingsService.save();
+        assertNull(newSettingsService().getReplayGainFallback());
     }
 
     private void verifySettings(SettingsService ss) {
@@ -185,6 +229,7 @@ public class SettingsServiceTestCase {
         assertTrue(settingsService.isLdapAutoShadowing());
         assertFalse(settingsService.getEnableCueIndexing());
         assertFalse(settingsService.getHideVirtualTracks());
+        assertFalse(ss.isShowVersionOnLogin());
     }
 
     @Test

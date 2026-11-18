@@ -21,6 +21,7 @@
 package org.airsonic.player.domain;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import org.airsonic.player.build.UnmodifiableResult;
 import org.airsonic.player.util.FileUtil;
 import org.apache.commons.io.FilenameUtils;
 
@@ -697,6 +698,16 @@ public class MediaFile {
         return version;
     }
 
+    /**
+     * Stamps the row with the current schema {@link #VERSION}. Must be called by every
+     * re-parse path before the row is saved — a bumped VERSION flags older rows for one
+     * re-read, and without the stamp the row stays below VERSION forever, turning every
+     * scan into a full re-parse (#341).
+     */
+    public void markCurrentVersion() {
+        this.version = VERSION;
+    }
+
     public Double getAverageRating() {
         return averageRating;
     }
@@ -736,10 +747,10 @@ public class MediaFile {
         } else if (!path.equals(other.path)) {
             return false;
         }
-        if (!folder.equals(other.folder)) {
+        if (!Objects.equals(this.folder, other.folder)) {
             return false;
         }
-        if (!startPosition.equals(other.startPosition)) {
+        if (!Objects.equals(this.startPosition, other.startPosition)) {
             return false;
         }
         return true;
@@ -755,6 +766,7 @@ public class MediaFile {
         return getName();
     }
 
+    @UnmodifiableResult
     public static List<Integer> toIdList(List<MediaFile> from) {
         return from.stream().map(toId()).toList();
     }
@@ -765,6 +777,11 @@ public class MediaFile {
 
     public static final double NOT_INDEXED = -1.0;
 
+    /**
+     * Media-file schema version. Bumping it makes {@code needsUpdate} re-parse every row once;
+     * the re-parse stamps the new value via {@link #markCurrentVersion()} — without that stamp
+     * the bump never settles and every scan re-parses the whole library.
+     */
     public static final int VERSION = 5;
 
     public static enum MediaType {

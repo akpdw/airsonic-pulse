@@ -22,6 +22,7 @@ package org.airsonic.player.service.sonos;
 
 import com.auth0.jwt.interfaces.DecodedJWT;
 import com.sonos.services._1.*;
+import org.airsonic.player.build.UnmodifiableResult;
 import org.airsonic.player.controller.CoverArtController;
 import org.airsonic.player.domain.*;
 import org.airsonic.player.service.*;
@@ -590,7 +591,10 @@ public class SonosHelper {
         trackMetadata.setAlbumArtist(song.getAlbumArtist());
         trackMetadata.setAlbum(song.getAlbumName());
         trackMetadata.setAlbumArtURI(albumArtURI);
-        trackMetadata.setDuration((int) Math.round(song.getDuration()));
+        Double duration = song.getDuration();
+        if (duration != null) { // duration is minOccurs="0" in the Sonos WSDL; omit rather than NPE (#322)
+            trackMetadata.setDuration((int) Math.round(duration));
+        }
         trackMetadata.setTrackNumber(song.getTrackNumber());
         trackMetadata.setGenre(song.getGenre());
 
@@ -633,6 +637,7 @@ public class SonosHelper {
         return result;
     }
 
+    @UnmodifiableResult
     private List<MediaFile> filterMusic(@Nonnull List<MediaFile> files) {
         return files.stream().filter(input -> input.getMediaType() == MediaFile.MediaType.MUSIC).toList();
     }
