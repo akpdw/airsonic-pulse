@@ -1,0 +1,11 @@
+diff a/airsonic-main/src/main/java/org/airsonic/player/service/UPnPService.java b/airsonic-main/src/main/java/org/airsonic/player/service/UPnPService.java	(rejected hunks)
+@@ -127,6 +127,9 @@ public class UPnPService {
+     private synchronized void createService() {
+         upnpService = new UpnpServiceImpl(new ApacheUpnpServiceConfiguration(settingsService.getUPnpPort()));
+ 
++        // the javadoc says UpnpServiceImpl starts on create but it doesn't
++        upnpService.startup();
++
+         // Asynch search for other devices (most importantly UPnP-enabled routers for
+         // port-mapping)
+         upnpService.getControlPoint().search();
