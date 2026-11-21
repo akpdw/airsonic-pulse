@@ -12,6 +12,7 @@ import org.airsonic.player.domain.Genre;
 import org.airsonic.player.domain.MediaFile;
 import org.airsonic.player.domain.MusicFolder;
 import org.airsonic.player.domain.MusicFolder.Type;
+import org.airsonic.player.domain.Playlist;
 import org.airsonic.player.domain.SearchCriteria;
 import org.airsonic.player.domain.SearchResult;
 import org.airsonic.player.repository.GenreRepository;
@@ -40,18 +41,23 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.io.File;
+import java.io.IOException;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -113,6 +119,9 @@ public class MediaScannerServiceTestCase {
 
     @Autowired
     private SearchService searchService;
+
+    @Autowired
+    private PlaylistService playlistService;
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -1408,6 +1417,81 @@ public class MediaScannerServiceTestCase {
         assertEquals(Paths.get(album.getPath()).resolve("airsonic-test.flac").toString(), track1.getPath());
         assertNull(track1.getIndexPath());
         assertEquals(0.0d, track1.getStartPosition(), 0.0d);
+    }
+
+    /**
+     * Tests the MediaScannerService by scanning the test media library into an empty
+     * database, then making sure it updates the playlists.
+     */
+    @Test
+    public void testScanLibraryUpdatesPlaylists() {
+        LOG.info("start testScanLibraryUpdatesPlaylists");
+        Timer globalTimer = metrics.timer(MetricRegistry.name(MediaScannerServiceTestCase.class, "Timer.global"));
+
+        Timer.Context globalTimerContext = globalTimer.time();
+        testFolders = MusicFolderTestData.getTestMusicFolders();
+        musicFolderRepository.saveAll(testFolders);
+        testFolders.forEach(MusicFolderTestData::requirePersisted);
+        mediaFolderService.clearMusicFolderCache();
+        Path playlistPath = null;
+        Map<String, Integer> sizeMap = new HashMap<>();
+        try {
+            Path playlistParent = Paths.get(MusicFolderTestData.class.getResource("/PLAYLISTS/").toURI());
+            playlistPath = playlistParent.resolve("scannerTest");
+
+            Files.createDirectory(playlistPath);
+            for (MusicFolder f: testFolders) {
+                List<String> filenameList = Files.walk(f.getPath()).filter(file -> !Files.isDirectory(file))
+                    .map(Path::toString).toList();
+                sizeMap.put(f.getName(), filenameList.size());
+                String playlistString = String.join("\n", filenameList);
+                Path newPlaylistPath = playlistPath.resolve(f.getName() + ".m3u");
+                Files.writeString(newPlaylistPath, playlistString);
+            }
+
+            settingsService.setPlaylistFolder(playlistPath.toString());
+            TestCaseUtils.execScan(mediaScannerService);
+
+            // Music Folder Music must have 3 children
+            List<MediaFile> listeMusicChildren = mediaFileRepository.findByFolderAndParentPath(testFolders.get(0), "", Sort.by("startPosition"));
+            assertEquals(3, listeMusicChildren.size());
+            // Music Folder Music2 must have 1 children
+            List<MediaFile> listeMusic2Children = mediaFileRepository.findByFolderAndParentPath(testFolders.get(1), "", Sort.by("startPosition"));
+            assertEquals(1, listeMusic2Children.size());
+
+            // check to make sure playlists have been updated
+            List<Playlist> allPlaylists = playlistService.getAllPlaylists();
+            for (Playlist pl: allPlaylists) {
+                assertEquals(sizeMap.get(pl.getName()), pl.getFileCount());
+                playlistService.deletePlaylist(pl.getId());
+            }
+
+        } catch (IOException e) {
+            throw new RuntimeException("Error creating playlists for test", e);
+        } catch (URISyntaxException use) {
+            throw new RuntimeException("Error creating playlists for test", use);
+        } finally {
+            // clean up directory
+            if (playlistPath != null) {
+                try (Stream<Path> paths = Files.walk(playlistPath)) {
+                    paths.sorted(Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+                } catch (Exception e) {
+                    throw new RuntimeException("Error cleaning up playlist directory", e);
+                }
+            }
+        }
+
+        globalTimerContext.stop();
+
+        // display out metrics report
+        ConsoleReporter reporter = ConsoleReporter.forRegistry(metrics)
+                .convertRatesTo(TimeUnit.SECONDS)
+                .convertDurationsTo(TimeUnit.MILLISECONDS)
+                .build();
+        reporter.report();
+
+        // clear out playlist folder setting for other tests
+        settingsService.setPlaylistFolder(null);
     }
 
 }
