@@ -19,6 +19,8 @@ import org.springframework.boot.context.event.ApplicationStartedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 
+import jakarta.transaction.Transactional;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -98,6 +100,7 @@ public class PlaylistFileService {
                 () -> importPlaylist(fullPath, playlistService.getAllPlaylists()));
     }
 
+    @Transactional
     public void importPlaylists() {
         try {
             LOG.info("Starting playlist import.");
@@ -152,6 +155,7 @@ public class PlaylistFileService {
      * @throws Exception
      */
     public Playlist importPlaylist(User user, String playlistName, String fileName, Path file, InputStream inputStream, Playlist existingPlaylist) throws Exception {
+        LOG.info("importing playlist {}", fileName);
 
         // TODO: handle other encodings
         final SpecificPlaylist inputSpecificPlaylist = SpecificPlaylistFactory.getInstance().readFrom(inputStream, "UTF-8");
