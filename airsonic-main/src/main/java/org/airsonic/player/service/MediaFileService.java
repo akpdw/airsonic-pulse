@@ -571,7 +571,7 @@ public class MediaFileService {
      * @return Sorted list of genres.
      */
     public List<Genre> getGenres(boolean sortByAlbum) {
-        Sort sort = sortByAlbum ? Sort.by("albumCount") : Sort.by("songCount");
+        Sort sort = sortByAlbum ? Sort.by(Direction.DESC, "albumCount") : Sort.by(Direction.DESC,"songCount");
         return genreRepository.findAll(sort.and(Sort.by(Direction.ASC, "name")));
     }
 
